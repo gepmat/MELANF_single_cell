@@ -1,0 +1,437 @@
+---
+title: "MELANF_single_cell"
+output: html_notebook
+---
+
+
+
+
+```{r}
+library(Seurat)
+library(decoupleR)
+
+```
+
+
+```{r,include=F,message=F,warning=F,cache=T,fig.height=10,fig.width=10}
+#Homemade function to load single cell
+source("/home/matthieu/these/predicting-immunotherapy-resistance-melanoma/CITE-seq_Bruno/script/CITEseqInflixJanuary2021.R")
+
+
+path_figures="/home/matthieu/these/predicting-immunotherapy-resistance-melanoma_data/CITE-seq_Bruno/data/all_patient_data/MELANF/outs/"
+files =list.files("/home/matthieu/these/predicting-immunotherapy-resistance-melanoma_data/CITE-seq_Bruno/data/all_patient_data/MELANF/",all.files = T,full.names = T,recursive = T,pattern = "filtered_feature_bc_matrix.h5")
+NameSamples=str_split_fixed(files,pattern = "/",n=12)[,11]
+
+#Thresholds
+min_nFeature_RNA=200
+max_percent.mt=25
+max_nFeature_RNA=2500
+
+
+pbmc= Pipeline_Create_seurat_object_from_CellRanger(Patient_Expression_Files =files,NameSamples =NameSamples  )
+
+#The experiment in two batches as followed
+pbmc$Batch = case_when(pbmc$orig.ident%in%c("M16_S1","M16_S6",
+                                            "M17_S1","M17_S6",
+                                            "M26_S1","M26_S6",
+                                            "M42_S1","M42_S6")~"2023",
+                       TRUE~"2022")
+
+
+ggplot2::ggsave(filename = "Genes_per_cell_before_subset.png",ggplot2::qplot(x = Genes_per_cell, data=data.frame("Genes_per_cell"= Matrix::colSums(pbmc@assays$RNA@counts > 0)), geom="histogram")&ggplot2::theme_classic()& ggplot2::theme(text = ggplot2::element_text(size=20,face="bold")),device = "png",path = (path_figures),width = 15,height = 10)
+
+
+print("Subsetting Seurat Object")
+pbmc[["percent.mt"]] <- Seurat::PercentageFeatureSet(pbmc, pattern = "^MT-")
+  
+  
+pbmc <- PercentageFeatureSet(pbmc, "^RP[SL]", col.name = "percent_ribo")
+  
+# Percentage hemoglobin genes - includes all genes starting with HB except HBP.
+pbmc <- PercentageFeatureSet(pbmc, "^HB[^(P)]", col.name = "percent_hb")
+  
+plot1 <- FeatureScatter(pbmc, feature1 = "nCount_RNA", feature2 = "percent.mt",group.by = "Batch")
+plot2 <- FeatureScatter(pbmc, feature1 = "nCount_RNA", feature2 = "nFeature_RNA",group.by = "Batch")
+plot3=plot1+plot2
+
+ggplot2::ggsave(filename = "Plots of PBMC's Features before Subset.png",plot = plot3,device = "png",path = path_figures,width = 15,height = 10)
+
+ggplot2::ggsave(filename = "ViolinPlot of PBMC's Features before Subset.png",plot = Seurat::VlnPlot(pbmc, features = c("nFeature_RNA", "nCount_RNA", "percent.mt","percent_ribo","percent_hb"),group.by = "Batch", ncol = 3,pt.size = 0),device = "png",path = path_figures,width = 15,height = 10)
+
+#subset with thresholds
+pbmc <- subset(pbmc, subset = nFeature_RNA > min_nFeature_RNA & nFeature_RNA < max_nFeature_RNA & percent.mt < max_percent.mt)
+table(pbmc$orig.ident)
+
+
+ggplot2::ggsave(filename = "ViolinPlot of PBMC's Features after Subset.png",plot = Seurat::VlnPlot(pbmc, features = c("nFeature_RNA", "nCount_RNA", "percent.mt","percent_ribo","percent_hb"),group.by = "orig.ident", ncol = 3,pt.size = 0),device = "png",path = path_figures,width = 15,height = 10)
+  
+
+  
+  
+print("Normalize Seurat")
+pbmc <- ScaleData(pbmc, verbose = FALSE)
+gc()
+pbmc <- NormalizeData(pbmc)
+
+print("PCA")
+pbmc <- FindVariableFeatures(pbmc, selection.method = "vst", nfeatures = 2000)
+pbmc <- RunPCA(pbmc, npcs = 30,reduction.name = "RNApca", verbose = FALSE)
+  
+
+print("UMAP")
+pbmc <- RunUMAP(pbmc, reduction = "RNApca",reduction.name = "RNAumap"  ,  dims = 1:30)
+
+
+ggplot2::ggsave(filename = "UMAP_before_integration.png",plot = Seurat::DimPlot(pbmc, reduction = "RNAumap",group.by = "Batch", pt.size = 0.5,label = T,label.size = 10)+theme(text = element_text(face="bold",size = 30)) ,device = "png",path = path_figures,width = 15,height = 10)
+  
+ggplot2::ggsave(filename = "PCA_before_integration.png",plot = Seurat::DimPlot(pbmc, reduction = "RNApca",group.by = "Batch", pt.size = 0.5,label = T,label.size = 10)+theme(text = element_text(face="bold",size = 30)) ,device = "png",path = path_figures,width = 15,height = 10)
+  
+
+
+
+print("Integrating with FindIntegrationAnchors")
+pbmc <- Seurat::SplitObject(pbmc,split.by="orig.ident")
+  
+print("FindIntegrationAnchors Seurat")
+pbmc <- Seurat::FindIntegrationAnchors(object.list=pbmc,dims=1:15,anchor.features =  10000 )
+  
+print("IntegrateData Seurat")
+pbmc <- Seurat::IntegrateData(anchorset = pbmc, dims = 1:15)
+  
+  
+  
+
+pbmc <- Seurat::ScaleData(pbmc, verbose = FALSE)
+  
+pbmc <- Seurat::RunPCA(pbmc,assay ="integrated",features=rownames(pbmc@assays$integrated@data),  npcs=15)
+  
+explained=round((pbmc@reductions$pca@stdev/sum(pbmc@reductions$pca@stdev)*100))
+  
+ggplot2::ggsave(filename = "PCA of PBMC's on integrated data.png",plot = Seurat::DimPlot(pbmc,group.by = "orig.ident",reduction = "pca")&ggplot2::theme(text = ggplot2::element_text(size=20,face="bold"))&ggplot2::xlab(paste0("PC_1 ",explained[1],"%"))&ggplot2::ylab(paste0("PC_1 ",explained[2],"%")),device = "png",path =path_figures,width = 10,height = 10)
+
+
+print("Running clustering Seurat")
+pbmc <- Seurat::FindNeighbors(pbmc,assay = "integrated", dims = 1:10)
+pbmc <- Seurat::FindClusters(pbmc, resolution = 0.5)
+  
+print("Running UMAP Seurat")
+pbmc <- Seurat::RunUMAP(pbmc, dims = 1:10)
+  
+ggplot2::ggsave(filename = "UMAP of PBMC's on integrated data.png",plot = Seurat::DimPlot(pbmc,group.by = "Batch",reduction = "umap")&ggplot2::theme(text = ggplot2::element_text(size=20,face="bold")),device = "png",path =path_figures,width = 10,height = 10)
+  
+ggplot2::ggsave(filename = "Genes_per_cell.png",ggplot2::qplot(x = Genes_per_cell, data=data.frame("Genes_per_cell"= Matrix::colSums(pbmc@assays$RNA@counts > 0)), geom="histogram")&ggplot2::theme_classic()& ggplot2::theme(text = ggplot2::element_text(size=20,face="bold")),device = "png",path = path_figures,width = 15,height = 10)
+
+pbmc = Pipeline_Protein_Seurat(pbmc = pbmc,Patient_Protein_Files = files,NameSamples = NameSamples)
+
+Seurat::VariableFeatures(pbmc) <- rownames(pbmc[["ADT"]])
+pbmc <- Seurat::NormalizeData(pbmc, assay = "ADT", normalization.method = "CLR",margin=2)
+pbmc <- Seurat::ScaleData(pbmc, assay = "ADT")
+pbmc=RunPCA(pbmc,reduction.name = 'apca')
+# pbmc=RunUMAP(pbmc,reduction.name = 'aumap')
+
+
+#annotate cells with the Seurat pbmc reference
+reference <- SeuratDisk::LoadH5Seurat("/home/matthieu/these/predicting-immunotherapy-resistance-melanoma_data/CITE-seq_Bruno/data/old/pbmc_multimodal.h5seurat")
+  
+DefaultAssay(pbmc)="integrated"
+pbmc <- Seurat::SCTransform(pbmc, verbose = T)
+
+anchors <- Seurat::FindTransferAnchors(
+    reference = reference,
+    query = pbmc,
+    normalization.method = "SCT",
+    reference.reduction = "spca",
+    dims = 1:50,verbose = T
+)
+  
+pbmc <- Seurat::MapQuery(
+    anchorset = anchors,
+    query = pbmc,
+    reference = reference,
+    refdata = list(
+      celltype.l1 = "celltype.l1",
+      celltype.l2 = "celltype.l2",
+      celltype.l3= "celltype.l3",
+      predicted_ADT = "ADT"
+    ),
+    reference.reduction = "spca",
+    reduction.model = "wnn.umap"
+)
+
+rm(reference)
+rm(anchors)
+gc()
+  
+pbmc$Response=case_when(pbmc$orig.ident%in%c("M34_S1","M34_S6","M13_S1","M13_S6","M17_S1","M17_S6","M26_S1","M26_S6")~"R",
+                            TRUE~"NR")
+
+pbmc$Week=str_split_fixed(pbmc$Origin,pattern = "_",n = 2)[,2]
+pbmc$Patient = paste0(str_sub(pbmc$Origin,start = 1L,end = nchar(pbmc$Origin)-3))
+
+saveRDS(object = pbmc,file =paste0(path,"preprocessed_SEURAT.rds") )
+
+```
+## decoupleR PROGENy pathway activities
+
+```{r,include=F,message=F,warning=F,cache=T,fig.height=5,fig.width=15}
+pops= c("CD4","CD8")
+library(decoupleR)
+
+
+for(pop in pops){
+  pbmc=readRDS(paste0(path_figures,"preprocessed_SEURAT.rds"))
+Idents(pbmc)=pbmc$predicted.celltype.l2
+if(pop=="CD8"){
+  
+pbmc= subset(pbmc, idents = c("CD8 Naive",   "CD8 TCM",   "CD8 TEM" ))
+}
+if(pop=="CD4"){
+pbmc= subset(pbmc, idents = c("CD4 TEM","CD4 Naive","CD4 CTL","CD4 TCM","Treg","CD4 Proliferating"))
+}
+ 
+   
+net <- get_progeny(organism = 'human', top = 100)
+
+# Extract the normalized log-transformed counts
+mat <- as.matrix(pbmc@assays$RNA@data)
+
+# Run wmean
+acts <- run_wmean(mat=mat, net=net, .source='source', .target='target',
+                  .mor='weight', times = 100, minsize = 5,)
+
+# Extract norm_wmean and store it in pathwayswmean in data
+pbmc[['pathwayswmean']] <- acts %>%
+  filter(statistic == 'norm_wmean') %>%
+  pivot_wider(id_cols = 'source', names_from = 'condition',
+              values_from = 'score') %>%
+  column_to_rownames('source') %>%
+  Seurat::CreateAssayObject(.)
+
+# Change assay
+DefaultAssay(object = pbmc) <- "pathwayswmean"
+
+# Scale the data
+pbmc <- ScaleData(pbmc)
+pbmc@assays$pathwayswmean@data <- pbmc@assays$pathwayswmean@scale.data
+
+
+saveRDS(object = pbmc,file =paste0(path_figures,pop,"/",pop,".RDS") )
+
+}
+
+
+
+
+```
+
+
+
+#PLOTS
+```{r,fig.width=15}
+pops= c("CD4","CD8")
+path_figures="/home/matthieu/these/predicting-immunotherapy-resistance-melanoma_data/CITE-seq_Bruno/data/all_patient_data/MELANF/outs/"
+
+for(pop in pops){
+  
+if(pop=="CD8"){
+  pbmc=readRDS(paste0(path_figures,pop,".rds") )
+}
+if(pop=="CD4"){
+  pbmc=readRDS(paste0(path_figures,pop,"_with_TCM.RDS") )
+}
+
+
+dat=data.frame("Celltype"=pbmc$predicted.celltype.l2,"TNFa"=pbmc@assays$pathwayswmean@scale.data["TNFa",],"Response"=pbmc$Response,Time=pbmc$Week) %>% 
+  as.data.frame() %>% 
+  dplyr::filter(!(Celltype%in%c("CD4 CTL","CD4 Proliferating"))) %>% 
+  dplyr::mutate(Time=factor(ifelse(Time=="S1","W0","W6"),levels=c("W0","W6")),
+                Response=factor(ifelse(Response=="R","CR/PR","PD"),levels=c("PD","CR/PR")))
+
+############
+
+
+signif=dat %>% dplyr::group_by(Celltype,Time) %>% 
+ rstatix::wilcox_test(TNFa ~ Response) %>% 
+  rstatix::adjust_pvalue(method = "bonferroni") %>%
+  rstatix::add_significance("p.adj") %>% 
+  dplyr::filter(p.adj.signif!="ns")%>% 
+  write.table(.,paste0(path_figures,pop,"/",pop,"_TNFa_density_Response_stat.txt"),quote = F,sep = "\t",row.names = F)
+
+
+signif=dat %>% dplyr::group_by(Celltype,Response) %>% 
+ rstatix::wilcox_test(TNFa ~ Time) %>% 
+  rstatix::adjust_pvalue(method = "bonferroni") %>%
+  rstatix::add_significance("p.adj") %>% 
+  dplyr::filter(p.adj.signif!="ns")%>% 
+  write.table(.,paste0(path_figures,pop,"/",pop,"_TNFa_density_Time_stat.txt"),quote = F,sep = "\t",row.names = F)
+
+
+
+############
+
+
+p3=dat%>% 
+  ggplot(aes(x=TNFa, group=Response, fill=Response))+
+  facet_wrap(Time~Celltype,scales = "free_y")+
+  # scale_fill_manual(values = c("#004D40","#FFC107"))+
+  geom_density(alpha=0.5)+theme_classic()+theme(text=element_text(size=5,face = "bold"),line = element_line(linewidth = 0.2),rect  = element_rect(linewidth = 0.2))
+
+png(paste0(path_figures,pop,"/",pop,"_TNFa_density_Response.png"),width = 8,height = 7,units = "cm",res=300)
+print(p3)
+dev.off()
+
+
+############
+
+
+p3=dat%>% 
+  ggplot(aes(x=TNFa, group=Time, fill=Time))+
+  facet_wrap(Response~Celltype,scales = "free_y")+
+  # scale_fill_manual(values = c("#004D40","#FFC107"))+
+  geom_density(alpha=0.5)+theme_classic()+theme(text=element_text(size=5,face = "bold"),line = element_line(linewidth = 0.2),rect  = element_rect(linewidth = 0.2))
+
+png(paste0(path_figures,pop,"/",pop,"_TNFa_density_Time.png"),width = 8,height = 7,units = "cm",res=300)
+print(p3)
+dev.off()
+
+
+############
+
+
+dat=data.frame("Celltype"=pbmc$predicted.celltype.l2,"TNFa"=pbmc@assays$pathwayswmean@scale.data["TNFa",],"Response"=pbmc$Response,Time=pbmc$Week) %>% 
+  as.data.frame() %>% 
+  dplyr::filter(!(Celltype%in%c("CD4 CTL","CD4 Proliferating"))) %>% 
+  dplyr::mutate(TNF=ifelse(TNFa>0,TRUE,FALSE),
+                Time=factor(ifelse(Time=="S1","W0","W6"),levels=c("W0","W6")),
+                Response=factor(ifelse(Response=="R","CR/PR","PD"),levels=c("PD","CR/PR")),
+                id=paste0(Response," ", Time)) %>%
+  dplyr::group_by(Time,Response) %>%  
+  dplyr::summarise(id,positive=sum(TNF==TRUE)/n(),Tr=sum(TNF==TRUE),Fa=sum(TNF==FALSE),
+                   negative=sum(TNF==FALSE)/n(),Tr=sum(TNF==TRUE),Fa=sum(TNF==FALSE)) %>% unique()
+
+
+############ Positive cells
+p3=dat %>% 
+  dplyr::select(-Tr,-Fa) %>% 
+  pivot_longer(cols = is.numeric,names_to = "positive",values_to = "Frequence") %>% 
+    dplyr::filter(positive=="positive") %>% 
+  ggplot(aes(x=id,y=Frequence,fill=Time))+
+  geom_bar(stat="identity")+
+  xlab("Response/Time")+
+    # scale_fill_manual(values = c("black","lightgreen"))+
+  # scale_fill_manual(values = c("darkred","blue"))+
+  ylab("Frequence of cells with positive activity")+
+  # facet_wrap(Response~Celltype,scales = "free_y")+
+  theme_classic()+
+  theme(text=element_text(size=5,face = "bold"))
+
+png(paste0(path_figures,pop,"/",pop,"_TNF_proportion_positive_cell_evolution.png"),width = 6,height = 5,units = "cm",res=300)
+print(p3)
+dev.off()
+
+
+#CHIsquare comparing enrichment in TNF positive cells in CR/PR and PD at W0
+value_PD=round(dat$positive[dat$id=="PD W0"]*100)
+value_R = round(dat$positive[dat$id=="CR/PR W0"]*100)
+
+M <- as.table(rbind(c(value_PD, value_R), c(100-value_PD, 100-value_R)))
+dimnames(M) <- list(TNFa = c("Positive", "Negative"),
+                    Response = c("PD","CR/PR"))
+Xsq <- chisq.test(M)
+
+
+#CHIsquare comparing enrichment in TNF positive cells in CR/PR and PD at W6
+value_PD2=round(dat$positive[dat$id=="PD W6"]*100)
+value_R2 = round(dat$positive[dat$id=="CR/PR W6"]*100)
+M <- as.table(rbind(c(value_PD2, value_R2), c(100-value_PD2, 100-value_R2)))
+dimnames(M) <- list(TNFa = c("Positive", "Negative"),
+                    Response = c("PD","CR/PR"))
+Xsq2 <- chisq.test(M)
+
+
+#Write.table of statistics
+write.table(data.frame("Time"=c("W0","W6"),
+           "Group1"="PD",
+           "Group2"="CR/PR",
+           "Test"="chisq.test",
+           "freq_PD"=c(value_PD,value_PD2),
+           "freq_CR/PR"=c(value_R,value_R2),
+           "pvalue"=c(Xsq$p.value,Xsq2$p.value)),
+           paste0(path_figures,pop,"/",pop,"_chi2_positive_cells.txt"),quote = F,sep = "\t",row.names = F)
+
+
+#CHIsquare comparing enrichment in TNF positive cells in W0 and W for PD
+value_W0=round(dat$positive[dat$id=="PD W0"]*100)
+value_W6 = round(dat$positive[dat$id=="PD W6"]*100)
+M <- as.table(rbind(c(value_W0, value_W6), c(100-value_W0, 100-value_W6)))
+dimnames(M) <- list(TNFa = c("Positive", "Negative"),
+                    Response = c("PD W0","PD W6"))
+Xsq <- chisq.test(M)
+
+
+#CHIsquare comparing enrichment in TNF positive cells in W0 and W for PR/CR
+value_W02=round(dat$positive[dat$id=="CR/PR W0"]*100)
+value_W62 = round(dat$positive[dat$id=="CR/PR W6"]*100)
+M <- as.table(rbind(c(value_W02, value_W62), c(100-value_W02, 100-value_W62)))
+dimnames(M) <- list(TNFa = c("Positive", "Negative"),
+                    Response = c("CR/PR W0","CR/PR W6"))
+Xsq2 <- chisq.test(M)
+
+#Write.table of statistics
+write.table(data.frame("Condition"=c("PD","CR/PR"),
+           "Group1"="W0",
+           "Group2"="W6",
+           "Test"="chisq.test",
+           "freq_W0"=c(value_W0,value_W02),
+           "freq_W6"=c(value_W6,value_W62),
+           "pvalue"=c(Xsq$p.value,Xsq2$p.value)),
+           paste0(path_figures,pop,"/",pop,"_chi2_positive_cells_Time.txt"),quote = F,sep = "\t",row.names = F)
+
+
+#########################
+DefaultAssay(pbmc)="RNA"
+if(pop=="CD8"){
+  pbmc$id=factor(case_when(pbmc$predicted.celltype.l2=="CD8 TEM"~"CD8 EM",
+                       pbmc$predicted.celltype.l2=="CD8 TCM"~"CD8 CM",
+                       pbmc$predicted.celltype.l2=="CD8 Naive"~"CD8 Naive",
+                       TRUE~"lol"),levels = c("CD8 Naive","CD8 CM","CD8 EM"))
+}
+if(pop=="CD4"){
+  pbmc$id=factor(case_when(pbmc$predicted.celltype.l2=="CD4 CTL"~"CD4 CTL",
+                           pbmc$predicted.celltype.l2=="CD4 Proliferating"~"CD4 Proliferating",
+                           pbmc$predicted.celltype.l2=="CD4 TCM"~"CD4 CM",
+                           pbmc$predicted.celltype.l2=="CD4 TEM"~"CD4 EM",
+                       pbmc$predicted.celltype.l2=="Treg"~"Treg",
+                       pbmc$predicted.celltype.l2=="CD4 Naive"~"CD4 Naive",
+                       TRUE~"lol"),levels = c("CD4 CTL","CD4 Naive","CD4 Proliferating","CD4 EM","Treg","CD4 CM"))
+}
+
+Idents(pbmc)=pbmc$id
+p1=(DimPlot(pbmc,reduction = "umap",group.by ="id", label = TRUE, repel = TRUE, label.size = 3,pt.size=0.1) )+ggtitle("")
+
+#Plot UMAP group by cell type
+png(paste0(path_figures,pop,"/",pop,"_UMAP_Seurat_Clusters.png"),width = 12,height = 5,units = "cm",res=300)
+print(p1)
+dev.off()
+
+#Plot feature plot TNF expression
+p1=(FeaturePlot(pbmc,reduction = "umap",features = 'TNF', label = F, repel = F, label.size = 3,pt.size=0.1) )+ggtitle("")
+png(paste0(path_figures,pop,"/",pop,"_TNF_expression.png"),width = 10,height = 5,units = "cm",res=300)
+print(p1)
+dev.off()
+
+########################################################
+
+DefaultAssay(pbmc)="pathwayswmean"
+
+#Plot feature plot TNF pathway activity (PROGENy)
+p1=FeaturePlot(pbmc,reduction = "umap",features =  "TNFa", label = F, repel = F, label.size = 3,pt.size=0.1)&ggtitle("") &
+  scale_colour_gradient2(low = 'blue', mid = 'white', high = 'red')
+png(paste0(path_figures,pop,"/",pop,"_UMAP_ref_Progeny_TNF.png"),width = 10,height = 5,units = "cm",res=300)
+print(p1)
+dev.off()
+}
+
+```
+
+
