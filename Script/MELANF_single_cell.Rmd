@@ -269,14 +269,18 @@ signif=dat %>% dplyr::group_by(Celltype,Response) %>%
 
 ############
 
+# p.list = lapply(sort(unique(dat$Celltype)), function(i) {
+#   ggplot(dat[dat$Celltype==i,], aes(x=TNFa, group=Response, fill=Response)) +
+#     geom_density(alpha=0.5)+theme_classic()+theme(text=element_text(size=5,face = "bold"),line = element_line(linewidth = 0.2),rect  = element_rect(linewidth = 0.2))+ggtitle(i)
+# })
 
-p3=dat%>% 
+p3=dat%>% dplyr::filter(Celltype!="Treg") %>% 
   ggplot(aes(x=TNFa, group=Response, fill=Response))+
   facet_wrap(Time~Celltype,scales = "free_y")+
   # scale_fill_manual(values = c("#004D40","#FFC107"))+
   geom_density(alpha=0.5)+theme_classic()+theme(text=element_text(size=5,face = "bold"),line = element_line(linewidth = 0.2),rect  = element_rect(linewidth = 0.2))
 
-png(paste0(path_figures,pop,"/",pop,"_TNFa_density_Response.png"),width = 8,height = 7,units = "cm",res=300)
+png(paste0(path_figures,pop,"/",pop,"_TNFa_density_Response.png"),width = 8,height = 5,units = "cm",res=300)
 print(p3)
 dev.off()
 
@@ -284,13 +288,13 @@ dev.off()
 ############
 
 
-p3=dat%>% 
+p3=dat%>% dplyr::filter(Celltype!="Treg") %>% 
   ggplot(aes(x=TNFa, group=Time, fill=Time))+
   facet_wrap(Response~Celltype,scales = "free_y")+
   # scale_fill_manual(values = c("#004D40","#FFC107"))+
   geom_density(alpha=0.5)+theme_classic()+theme(text=element_text(size=5,face = "bold"),line = element_line(linewidth = 0.2),rect  = element_rect(linewidth = 0.2))
 
-png(paste0(path_figures,pop,"/",pop,"_TNFa_density_Time.png"),width = 8,height = 7,units = "cm",res=300)
+png(paste0(path_figures,pop,"/",pop,"_TNFa_density_Time.png"),width = 8,height = 5,units = "cm",res=300)
 print(p3)
 dev.off()
 
